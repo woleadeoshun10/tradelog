@@ -163,7 +163,7 @@ Anyone can open the same HTML file, create their own Supabase account, and see o
 ## File Structure
  
 ```
-trading-journal-v2.html   — entire app (HTML + CSS + JS, ~1600 lines)
+index.html   — entire app (HTML + CSS + JS, ~1600 lines)
 supabase-setup.sql        — database setup script
 README.md                 — this file
 ```
