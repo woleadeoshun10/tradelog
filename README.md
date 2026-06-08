@@ -116,7 +116,7 @@ create policy "Users delete journal images" on storage.objects
 ```
  
 3. Copy your **Project URL** and **anon/public key** from **Settings → API**
-4. Replace `SB_URL` and `SB_KEY` at the top of `trading-journal-v2.html`
+4. Replace `SB_URL` and `SB_KEY` at the top of `index.html`
 ### 2. Open the app
  
 Open `trading-journal-v2.html` directly in Chrome. No server needed.
