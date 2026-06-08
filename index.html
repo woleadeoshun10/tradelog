@@ -290,6 +290,20 @@ body.light input[type="date"]::-webkit-calendar-picker-indicator {
   <span class="sync-status" id="syncStatus">Not connected — go to Sync tab</span>
   <button class="sync-now-btn" id="syncNowBtn" onclick="triggerSync()" disabled>↻ Sync Now</button>
   <span id="lastSyncLbl" style="color:var(--text-dim);font-size:10px;margin-left:auto"></span>
+  <select id="tzSelect" onchange="setTimezone(this.value)" style="background:var(--bg);border:1px solid var(--border2);border-radius:5px;padding:3px 8px;color:var(--text-dim);font-family:'Space Mono',monospace;font-size:10px;outline:none;cursor:pointer" title="Display timezone">
+    <option value="UTC">UTC</option>
+    <option value="America/New_York">New York (ET)</option>
+    <option value="America/Chicago">Chicago (CT)</option>
+    <option value="America/Los_Angeles">Los Angeles (PT)</option>
+    <option value="Europe/London">London (GMT/BST)</option>
+    <option value="Europe/Paris">Paris (CET)</option>
+    <option value="Asia/Dubai">Dubai (GST)</option>
+    <option value="Asia/Lagos">Lagos (WAT)</option>
+    <option value="Africa/Accra">Accra (GMT)</option>
+    <option value="Asia/Tokyo">Tokyo (JST)</option>
+    <option value="Asia/Singapore">Singapore (SGT)</option>
+    <option value="Australia/Sydney">Sydney (AEST)</option>
+  </select>
 </div>
 
 <div id="tfBar">
@@ -418,6 +432,7 @@ body.light input[type="date"]::-webkit-calendar-picker-indicator {
   <div class="modal">
     <div class="modal-head"><h2>LOG TRADE MANUALLY</h2><button class="modal-close" onclick="closeTradeModal()">×</button></div>
     <div class="modal-body">
+      <input type="hidden" id="f-editId">
       <div class="form-row">
         <div class="form-group"><label>Date</label><input type="date" id="f-date"></div>
         <div class="form-group"><label>Time</label><input type="time" id="f-time"></div>
@@ -560,10 +575,25 @@ function clearSession(){localStorage.removeItem('sb_session');}
 
 async function sbFetch(method,path,body,token){
   const sess=getSession();
-  const tok=token||sess?.access_token;
+  let tok=token||sess?.access_token;
   const h={'apikey':SB_KEY,'Content-Type':'application/json'};
   if(tok) h['Authorization']='Bearer '+tok;
-  const r=await fetch(SB_URL+path,{method,headers:h,body:body?JSON.stringify(body):null});
+  let r=await fetch(SB_URL+path,{method,headers:h,body:body?JSON.stringify(body):null});
+  // Auto-refresh on JWT expired then retry once
+  if(r.status===401||r.status===403){
+    const refreshed=await sbRefresh();
+    if(refreshed?.access_token){
+      tok=refreshed.access_token;
+      h['Authorization']='Bearer '+tok;
+      r=await fetch(SB_URL+path,{method,headers:h,body:body?JSON.stringify(body):null});
+    } else {
+      // Refresh failed — session fully expired, prompt re-login
+      clearSession();
+      document.getElementById('authOverlay').classList.add('open');
+      toast('Session expired — please sign in again',true);
+      throw new Error('Session expired');
+    }
+  }
   const txt=await r.text();
   if(!r.ok) throw new Error(txt);
   return txt?JSON.parse(txt):null;
@@ -590,7 +620,13 @@ async function sbRefresh(){
   try{
     const r=await fetch(SB_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{'apikey':SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:s.refresh_token})});
     const d=await r.json();
-    if(r.ok){setSession(d);return d;}
+    if(r.ok){
+      // Merge to preserve user object if new response doesn't include it
+      const merged={...s,...d};
+      if(!merged.user&&s.user)merged.user=s.user;
+      setSession(merged);
+      return merged;
+    }
   }catch{}
   return null;
 }
@@ -1105,6 +1141,30 @@ function setTheme(t){
 }
 
 // ═══════════════════════════════════════════════════
+// TIMEZONE
+// ═══════════════════════════════════════════════════
+let currentTZ=localStorage.getItem('tradelog_tz')||'UTC';
+
+function setTimezone(tz){
+  currentTZ=tz;
+  localStorage.setItem('tradelog_tz',tz);
+  renderAll();
+}
+
+function tzTime(dateStr,timeStr){
+  // Convert stored UTC date+time to display timezone
+  if(!dateStr||!timeStr) return{date:dateStr||'',time:timeStr||''};
+  try{
+    const utc=new Date(dateStr+'T'+timeStr+':00Z');
+    if(isNaN(utc.getTime())) return{date:dateStr,time:timeStr};
+    const opts={timeZone:currentTZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false};
+    const parts=new Intl.DateTimeFormat('en-CA',opts).formatToParts(utc);
+    const get=t=>parts.find(p=>p.type===t)?.value||'';
+    return{date:`${get('year')}-${get('month')}-${get('day')}`,time:`${get('hour')}:${get('minute')}`};
+  }catch{return{date:dateStr,time:timeStr};}
+}
+
+// ═══════════════════════════════════════════════════
 // NAV / FILTER
 // ═══════════════════════════════════════════════════
 function setAcct(a,btn){
@@ -1218,10 +1278,20 @@ function renderStats(ft){
   const pnl=ft.reduce((s,t)=>s+(parseFloat(t.pnl)||0),0);
   const rrVals=ft.map(t=>parseFloat(effRR(t))||0).filter(v=>v>0);
   const avgRR=rrVals.length?(rrVals.reduce((a,b)=>a+b,0)/rrVals.length).toFixed(1):'—';
-  const sorted=[...ft].sort((a,b)=>new Date(b.date+'T'+(b.time||'00:00'))-new Date(a.date+'T'+(a.time||'00:00')));
+  // Streak based on daily P&L (not individual trades)
+  const dayPnlMap={};
+  ft.forEach(t=>{if(t.date){if(!dayPnlMap[t.date])dayPnlMap[t.date]=0;dayPnlMap[t.date]+=(parseFloat(t.pnl)||0);}});
+  const sortedDays=Object.keys(dayPnlMap).sort().reverse();
   let streak=0,sType=null;
-  for(const t of sorted){if(t.result==='be')continue;if(!sType){sType=t.result;streak=1;}else if(t.result===sType)streak++;else break;}
-  const dots=sorted.slice(0,10).reverse().map(t=>`<div class="sd ${t.result==='win'?'w':t.result==='loss'?'l':''}"></div>`).join('');
+  for(const day of sortedDays){
+    const p=dayPnlMap[day];
+    const dr=p>0?'win':p<0?'loss':null;
+    if(!dr)continue;
+    if(!sType){sType=dr;streak=1;}
+    else if(dr===sType)streak++;
+    else break;
+  }
+  const dots=sortedDays.slice(0,10).reverse().map(day=>{const p=dayPnlMap[day];return`<div class="sd ${p>0?'w':p<0?'l':''}"></div>`;}).join('');
   document.getElementById('statsGrid').innerHTML=`
     <div class="stat-card g"><div class="stat-label">Win Rate</div><div class="stat-value g">${wr}%</div><div class="stat-sub">${wins}W / ${losses}L / ${total}</div></div>
     <div class="stat-card ${pnl>=0?'g':'r'}"><div class="stat-label">Total P&amp;L</div><div class="stat-value ${pnl>=0?'g':'r'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</div><div class="stat-sub">${total} trades</div></div>
@@ -1239,8 +1309,9 @@ function renderTable(ft){
     const hasJ=journals[t.id];
     const src=t.source==='auto'?'<span class="badge auto" style="font-size:8px">AUTO</span>':'<span class="badge manual" style="font-size:8px">MAN</span>';
     const rowCls=t.source==='auto'?'style="border-left:2px solid var(--blue)"':'style="border-left:2px solid var(--border2)"';
+    const tz=tzTime(t.date,t.time);
     return `<tr onclick="openDetail('${t.id}')">
-      <td ${rowCls}>${t.date} <span style="color:var(--text-dim);font-size:9px">${t.time||''}</span></td>
+      <td ${rowCls}>${tz.date} <span style="color:var(--text-dim);font-size:9px">${tz.time||''}</span></td>
       <td><strong>${t.pair}</strong></td>
       <td><span class="badge ${t.dir}">${(t.dir||'').toUpperCase()}</span></td>
       <td>${t.entry||'—'}</td>
@@ -1434,6 +1505,7 @@ function openDetail(id){
     ${(t.mistakes||[]).length?`<div class="detail-row"><span class="detail-key">Mistakes</span><span class="detail-val">${t.mistakes.map(m=>`<span class="mistake-tag">${m}</span>`).join('')}</span></div>`:''}
     ${t.notes?`<div class="detail-row" style="flex-direction:column;gap:5px"><span class="detail-key">Notes</span><span style="color:var(--text-mid);font-size:11px;line-height:1.6">${t.notes}</span></div>`:''}
     <button class="edit-btn" onclick="closeDetail();openJournal('${id}')">${hasJ?'✏️ Edit Journal':'📓 Add Journal'}</button>
+    <button class="edit-btn" style="background:var(--gold-dim);border-color:var(--gold);color:var(--gold);margin-top:6px" onclick="closeDetail();openEditTrade('${id}')">✏️ Edit Trade</button>
     <button class="del-btn" onclick="deleteTrade('${id}')">🗑 Delete Trade</button>`;
   document.getElementById('detailOverlay').classList.add('open');
 }
@@ -1495,7 +1567,36 @@ function openTradeModal(){
   document.querySelectorAll('#tradeMistakes .mchip').forEach(c=>c.classList.remove('on'));
   document.getElementById('f-date').value=NOW.toISOString().split('T')[0];
   document.getElementById('f-time').value=NOW.toTimeString().slice(0,5);
+  document.getElementById('f-editId').value='';
+  document.querySelector('#tradeOverlay .modal-head h2').textContent='LOG TRADE MANUALLY';
   buildStrategySelect('f-strategy');
+  document.getElementById('tradeOverlay').classList.add('open');
+}
+
+function openEditTrade(id){
+  const t=trades.find(x=>x.id===id);if(!t)return;
+  selMistakes=[...(t.mistakes||[])];
+  document.querySelectorAll('#tradeMistakes .mchip').forEach(c=>{
+    c.classList.toggle('on',selMistakes.includes(c.textContent.trim()));
+  });
+  document.getElementById('f-editId').value=id;
+  document.getElementById('f-date').value=t.date||'';
+  document.getElementById('f-time').value=t.time||'';
+  document.getElementById('f-pair').value=t.pair||'XAUUSD';
+  document.getElementById('f-dir').value=t.dir||'long';
+  document.getElementById('f-session').value=t.session||'ny';
+  document.getElementById('f-entry').value=t.entry||'';
+  document.getElementById('f-sl').value=t.sl||'';
+  document.getElementById('f-tp').value=t.tp||'';
+  document.getElementById('f-exit').value=t.exit||'';
+  document.getElementById('f-lots').value=t.lots||'';
+  document.getElementById('f-pnl').value=t.pnl||'';
+  document.getElementById('f-acct').value=t.acct||'demo';
+  document.getElementById('f-result').value=t.result||'win';
+  document.getElementById('f-rr').value=t.rr||'';
+  document.getElementById('f-notes').value=t.notes||'';
+  buildStrategySelect('f-strategy',t.strategy||'');
+  document.querySelector('#tradeOverlay .modal-head h2').textContent='EDIT TRADE';
   document.getElementById('tradeOverlay').classList.add('open');
 }
 
@@ -1508,8 +1609,9 @@ function toggleMistake(btn,name){
 }
 
 function saveTrade(){
-  const t={
-    id:Date.now().toString(),source:'manual',
+  const editId=document.getElementById('f-editId').value;
+  const data={
+    source: editId?(trades.find(x=>x.id===editId)?.source||'manual'):'manual',
     date:document.getElementById('f-date').value,
     time:document.getElementById('f-time').value,
     pair:document.getElementById('f-pair').value,
@@ -1528,9 +1630,17 @@ function saveTrade(){
     notes:document.getElementById('f-notes').value,
     mistakes:[...selMistakes]
   };
-  if(!t.date||!t.pair){alert('Date and pair required.');return;}
-  trades.push(t);save();closeTradeModal();renderAll();toast('Trade logged ✓');
-  ['f-entry','f-sl','f-tp','f-exit','f-lots','f-pnl','f-rr','f-notes'].forEach(id=>document.getElementById(id).value='');
+  if(!data.date||!data.pair){alert('Date and pair required.');return;}
+  if(editId){
+    const idx=trades.findIndex(x=>x.id===editId);
+    if(idx!==-1){trades[idx]={...trades[idx],...data};}
+    toast('Trade updated ✓');
+  }else{
+    trades.push({id:Date.now().toString(),...data});
+    toast('Trade logged ✓');
+    ['f-entry','f-sl','f-tp','f-exit','f-lots','f-pnl','f-rr','f-notes'].forEach(id=>document.getElementById(id).value='');
+  }
+  save();closeTradeModal();renderAll();
 }
 
 // ═══════════════════════════════════════════════════
@@ -1851,7 +1961,16 @@ async function handleSignOut(){
     ub.style.cssText='display:flex;align-items:center;gap:8px;font-size:10px';
     document.getElementById('userEmail').textContent=s.user?.email||'';
     renderAll();
-    await sbRefresh();
+    // Try to refresh first — if it fails, prompt re-login silently
+    const refreshed=await sbRefresh();
+    if(!refreshed){
+      // Refresh token expired — clear and prompt sign in
+      clearSession();
+      document.getElementById('userBadge').setAttribute('style','display:none');
+      document.getElementById('authOverlay').classList.add('open');
+      toast('Session expired — please sign in again',true);
+      return;
+    }
     const ct=await cloudLoadTrades();
     trades=Array.isArray(ct)?ct:[];
     localStorage.setItem('tradelog_trades',JSON.stringify(trades));
@@ -1869,6 +1988,13 @@ async function handleSignOut(){
 
 updateSyncBar();
 buildStrategySelect('f-strategy');
+// Restore saved timezone
+(function(){
+  const tz=localStorage.getItem('tradelog_tz')||'UTC';
+  currentTZ=tz;
+  const sel=document.getElementById('tzSelect');
+  if(sel)sel.value=tz;
+})();
 </script>
 </body>
 </html>
