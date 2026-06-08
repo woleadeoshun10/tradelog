@@ -1124,7 +1124,8 @@ function save(){
 function saveJournals(){
   localStorage.setItem('tradelog_journals',JSON.stringify(journals));
   const s=getSession();
-  if(s?.user?.id) cloudSaveJournals(journals).catch(()=>{});
+  // Only sync to cloud if we actually have journal entries
+  if(s?.user?.id&&Object.keys(journals).length) cloudSaveJournals(journals).catch(()=>{});
 }
 function saveStrategies(){localStorage.setItem('tradelog_strategies',JSON.stringify(customStrategies));}
 function allStrats(){return[...BASE_STRATS,...customStrategies];}
@@ -1860,16 +1861,26 @@ async function afterSignIn(){
   document.getElementById('userEmail').textContent=s.user.email;
   toast('Signed in as '+s.user.email+' ✓');
 
-  // Load only this Supabase user's cloud data. If none exists, clear local data
-  // so a newly signed-in user never sees the previous user's trades.
   const ct=await cloudLoadTrades();
-  trades=Array.isArray(ct)?ct:[];
-  localStorage.setItem('tradelog_trades',JSON.stringify(trades));
-  if(trades.length)toast('✓ '+trades.length+' trades loaded');
+  // Only overwrite local trades if cloud returned actual data
+  if(Array.isArray(ct)&&ct.length){
+    trades=ct;
+    localStorage.setItem('tradelog_trades',JSON.stringify(trades));
+    toast('✓ '+trades.length+' trades loaded');
+  } else if(ct===null){
+    // Cloud load failed — keep existing local trades
+    toast('Cloud unavailable — using local trades',true);
+  }
+  // ct===[] means user has no trades yet — keep whatever is local
 
   const cj=await cloudLoadJournals();
-  journals=cj||{};
-  localStorage.setItem('tradelog_journals',JSON.stringify(journals));
+  // Only overwrite local journals if cloud returned actual data
+  if(cj&&Object.keys(cj).length){
+    journals=cj;
+    localStorage.setItem('tradelog_journals',JSON.stringify(journals));
+  } else if(cj===null){
+    // Cloud load failed — keep existing local journals
+  }
 
   renderAll();
   updateSyncBar();
@@ -1972,11 +1983,15 @@ async function handleSignOut(){
       return;
     }
     const ct=await cloudLoadTrades();
-    trades=Array.isArray(ct)?ct:[];
-    localStorage.setItem('tradelog_trades',JSON.stringify(trades));
+    if(Array.isArray(ct)&&ct.length){
+      trades=ct;
+      localStorage.setItem('tradelog_trades',JSON.stringify(trades));
+    }
     const cj=await cloudLoadJournals();
-    journals=cj||{};
-    localStorage.setItem('tradelog_journals',JSON.stringify(journals));
+    if(cj&&Object.keys(cj).length){
+      journals=cj;
+      localStorage.setItem('tradelog_journals',JSON.stringify(journals));
+    }
     renderAll();
     updateSyncBar();
     if(getCreds('demo')||getCreds('live'))setTimeout(()=>triggerSync(),1200);
