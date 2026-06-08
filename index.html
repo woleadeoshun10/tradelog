@@ -1124,8 +1124,9 @@ function save(){
 function saveJournals(){
   localStorage.setItem('tradelog_journals',JSON.stringify(journals));
   const s=getSession();
-  // Only sync to cloud if we actually have journal entries
-  if(s?.user?.id&&Object.keys(journals).length) cloudSaveJournals(journals).catch(()=>{});
+  if(s?.user?.id&&Object.keys(journals).length){
+    cloudSaveJournals(journals).catch(e=>console.error('Journal sync error:',e));
+  }
 }
 function saveStrategies(){localStorage.setItem('tradelog_strategies',JSON.stringify(customStrategies));}
 function allStrats(){return[...BASE_STRATS,...customStrategies];}
@@ -1789,7 +1790,22 @@ async function saveJournal(){
     emotion:document.getElementById('j-emotion').value,
     imageUrls:[...oldImages,...newImages],
     savedAt:new Date().toISOString()};
-  saveJournals();closeJournal();renderAll();toast('Journal saved ✓');
+  // Save locally first always
+  localStorage.setItem('tradelog_journals',JSON.stringify(journals));
+  // Then sync to cloud
+  const s=getSession();
+  if(s?.user?.id){
+    try{
+      await cloudSaveJournals(journals);
+      toast('Journal saved ✓');
+    }catch(e){
+      toast('Saved locally — cloud sync failed',true);
+      console.error('Journal cloud save failed:',e);
+    }
+  } else {
+    toast('Journal saved locally ✓');
+  }
+  closeJournal();renderAll();
 }
 
 // ═══════════════════════════════════════════════════
