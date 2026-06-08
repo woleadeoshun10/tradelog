@@ -40,31 +40,79 @@ A self-hosted trading journal web app for HeroFX TradeLocker accounts. Single HT
 ```sql
 -- TRADES TABLE
 create table if not exists trades (
-  id text primary key,
+  id text not null,
   user_id uuid references auth.users(id) on delete cascade,
   source text, acct text, date text, time text, pair text, dir text,
   session text, entry text, exit text, sl text, tp text,
   lots numeric, pnl text, result text, rr text, strategy text,
   notes text, mistakes jsonb, tl_order_id text,
-  updated_at timestamptz default now()
+  updated_at timestamptz default now(),
+  primary key (id)
 );
  
--- JOURNALS TABLE
+-- JOURNALS TABLE (with screenshot URLs)
 create table if not exists journals (
   trade_id text not null,
   user_id uuid references auth.users(id) on delete cascade,
   rr text, strategy text, mistakes jsonb, setup text,
   execution text, lessons text, confidence text, emotion text,
+  image_urls jsonb default '[]'::jsonb,
   saved_at timestamptz, updated_at timestamptz default now(),
   primary key (trade_id, user_id)
 );
+ 
+-- Add screenshot column if journals table already exists
+alter table journals add column if not exists image_urls jsonb default '[]'::jsonb;
  
 -- ROW LEVEL SECURITY
 alter table trades enable row level security;
 alter table journals enable row level security;
  
-create policy "Users own trades" on trades for all using (auth.uid() = user_id);
-create policy "Users own journals" on journals for all using (auth.uid() = user_id);
+drop policy if exists "Users own trades" on trades;
+drop policy if exists "Users own journals" on journals;
+ 
+create policy "Users own trades" on trades
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+ 
+create policy "Users own journals" on journals
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+ 
+-- STORAGE BUCKET FOR JOURNAL SCREENSHOTS
+insert into storage.buckets (id, name, public)
+values ('journal-images', 'journal-images', true)
+on conflict (id) do update set public = true;
+ 
+drop policy if exists "Users upload journal images" on storage.objects;
+drop policy if exists "Users view journal images" on storage.objects;
+drop policy if exists "Users update journal images" on storage.objects;
+drop policy if exists "Users delete journal images" on storage.objects;
+ 
+create policy "Users upload journal images" on storage.objects
+  for insert with check (
+    bucket_id = 'journal-images'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+ 
+create policy "Users view journal images" on storage.objects
+  for select using (
+    bucket_id = 'journal-images'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+ 
+create policy "Users update journal images" on storage.objects
+  for update using (
+    bucket_id = 'journal-images'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  ) with check (
+    bucket_id = 'journal-images'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+ 
+create policy "Users delete journal images" on storage.objects
+  for delete using (
+    bucket_id = 'journal-images'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
 ```
  
 3. Copy your **Project URL** and **anon/public key** from **Settings → API**
