@@ -226,6 +226,11 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
   filter: invert(1);
 }
+
+body.light input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0);
+}
+
 /* AUTH */
 .auth-tabs{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:7px;overflow:hidden;margin-bottom:16px}
 .auth-tab{flex:1;padding:9px;border:none;background:transparent;color:var(--text-dim);font-family:'Space Mono',monospace;font-size:11px;cursor:pointer}
