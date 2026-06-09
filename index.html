@@ -1229,16 +1229,98 @@ function filteredTrades(){
 }
 
 // ═══════════════════════════════════════════════════
+// GROUPED TRADES (SETUPS MODE)
+// ═══════════════════════════════════════════════════
+let groupMode=localStorage.getItem('tradelog_groupmode')==='true';
+
+function setGroupMode(mode){
+  groupMode=mode;
+  localStorage.setItem('tradelog_groupmode',String(mode));
+  document.getElementById('btn-orders').classList.toggle('active',!mode);
+  document.getElementById('btn-setups').classList.toggle('active',mode);
+  renderAll();
+}
+
+function groupTrades(ft){
+  if(!ft.length) return [];
+  // Sort by date+time ascending for grouping
+  const sorted=[...ft].sort((a,b)=>{
+    const ta=new Date((a.date||'2000-01-01')+'T'+(a.time||'00:00')+':00Z').getTime();
+    const tb=new Date((b.date||'2000-01-01')+'T'+(b.time||'00:00')+':00Z').getTime();
+    return ta-tb;
+  });
+  const groups=[];
+  const used=new Set();
+  for(let i=0;i<sorted.length;i++){
+    if(used.has(i)) continue;
+    const a=sorted[i];
+    const aTime=new Date((a.date||'2000-01-01')+'T'+(a.time||'00:00')+':00Z').getTime();
+    const group=[a];
+    used.add(i);
+    for(let j=i+1;j<sorted.length;j++){
+      if(used.has(j)) continue;
+      const b=sorted[j];
+      const bTime=new Date((b.date||'2000-01-01')+'T'+(b.time||'00:00')+':00Z').getTime();
+      // Same day, pair, direction, account, within 10 minutes
+      if(b.date===a.date&&b.pair===a.pair&&b.dir===a.dir&&b.acct===a.acct&&Math.abs(bTime-aTime)<=600000){
+        group.push(b);
+        used.add(j);
+      }
+    }
+    if(group.length===1){groups.push({...a,_grouped:[a.id],_count:1});continue;}
+    // Merge group
+    const totalPnl=group.reduce((s,t)=>s+(parseFloat(t.pnl)||0),0);
+    const totalLots=group.reduce((s,t)=>s+(parseFloat(t.lots)||0),0);
+    // Weighted average entry and exit
+    const wavg=(field)=>{
+      const tot=group.reduce((s,t)=>{const p=parseFloat(t[field])||0;const l=parseFloat(t.lots)||0;return s+p*l;},0);
+      return totalLots>0?(tot/totalLots).toFixed(field==='entry'||field==='exit'?2:5):0;
+    };
+    const result=totalPnl>0?'win':totalPnl<0?'loss':'be';
+    const representative=group[0];
+    groups.push({
+      id:representative.id,
+      _grouped:group.map(t=>t.id),
+      _count:group.length,
+      source:representative.source,
+      acct:representative.acct,
+      date:representative.date,
+      time:representative.time,
+      pair:representative.pair,
+      dir:representative.dir,
+      session:representative.session,
+      entry:wavg('entry'),
+      exit:wavg('exit'),
+      sl:representative.sl,
+      tp:representative.tp,
+      lots:totalLots.toFixed(2),
+      pnl:totalPnl.toFixed(2),
+      result,
+      rr:representative.rr,
+      strategy:representative.strategy,
+      notes:representative.notes,
+      mistakes:representative.mistakes||[]
+    });
+  }
+  return groups;
+}
+
+function effectiveTrades(ft){
+  return groupMode?groupTrades(ft):ft;
+}
+
+// ═══════════════════════════════════════════════════
 // RENDER
 // ═══════════════════════════════════════════════════
 function renderAll(){
   const ft=filteredTrades();
-  renderTFSummary(ft);
-  renderStats(ft);
+  const et=effectiveTrades(ft);
+  renderTFSummary(et);
+  renderStats(et);
   if(currentView==='log')renderTable(ft);
   if(currentView==='calendar')renderCalendar();
-  if(currentView==='dashboard')renderDashboard(ft);
-  if(currentView==='weekly')renderWeekly(ft);
+  if(currentView==='dashboard')renderDashboard(et);
+  if(currentView==='weekly')renderWeekly(et);
   if(currentView==='journals')renderJournals();
 }
 
@@ -1302,8 +1384,25 @@ function renderStats(ft){
 }
 
 function renderTable(ft){
-  if(!ft.length){document.getElementById('tradeTableWrap').innerHTML='<div class="no-data">No trades in this period.</div>';return;}
-  const sorted=[...ft].sort((a,b)=>new Date(b.date+'T'+(b.time||'00:00'))-new Date(a.date+'T'+(a.time||'00:00')));
+  const display=effectiveTrades(ft);
+  const toggleHtml=`<div style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+    <button id="btn-orders" onclick="setGroupMode(false)" class="${!groupMode?'acct-btn active':'acct-btn'}" style="padding:5px 14px;font-size:10px">Orders</button>
+    <button id="btn-setups" onclick="setGroupMode(true)" class="${groupMode?'acct-btn active':'acct-btn'}" style="padding:5px 14px;font-size:10px">Setups</button>
+  </div>`;
+  // Update table header buttons
+  const hdr=document.querySelector('#view-log .table-header');
+  if(hdr){
+    // Replace or insert toggle
+    let tog=document.getElementById('groupToggle');
+    if(!tog){
+      tog=document.createElement('div');
+      tog.id='groupToggle';
+      hdr.insertBefore(tog,hdr.children[1]);
+    }
+    tog.innerHTML=toggleHtml;
+  }
+  if(!display.length){document.getElementById('tradeTableWrap').innerHTML='<div class="no-data">No trades in this period.</div>';return;}
+  const sorted=[...display].sort((a,b)=>new Date(b.date+'T'+(b.time||'00:00'))-new Date(a.date+'T'+(a.time||'00:00')));
   const rows=sorted.map(t=>{
     const pnl=parseFloat(t.pnl)||0;
     const rrv=effRR(t);
@@ -1312,9 +1411,10 @@ function renderTable(ft){
     const src=t.source==='auto'?'<span class="badge auto" style="font-size:8px">AUTO</span>':'<span class="badge manual" style="font-size:8px">MAN</span>';
     const rowCls=t.source==='auto'?'style="border-left:2px solid var(--blue)"':'style="border-left:2px solid var(--border2)"';
     const tz=tzTime(t.date,t.time);
+    const countBadge=t._count>1?`<span style="background:var(--gold-dim);color:var(--gold);border-radius:3px;padding:1px 5px;font-size:9px;margin-left:4px">${t._count}x</span>`:'';
     return `<tr onclick="openDetail('${t.id}')">
       <td ${rowCls}>${tz.date} <span style="color:var(--text-dim);font-size:9px">${tz.time||''}</span></td>
-      <td><strong>${t.pair}</strong></td>
+      <td><strong>${t.pair}</strong>${countBadge}</td>
       <td><span class="badge ${t.dir}">${(t.dir||'').toUpperCase()}</span></td>
       <td>${t.entry||'—'}</td>
       <td style="color:var(--red)">${t.sl||'—'}</td>
@@ -2026,6 +2126,7 @@ buildStrategySelect('f-strategy');
   const sel=document.getElementById('tzSelect');
   if(sel)sel.value=tz;
 })();
+// groupMode buttons are rendered dynamically in renderTable so no init needed
 </script>
 </body>
 </html>
