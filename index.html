@@ -836,7 +836,7 @@ function buildTrades(orders,env){
     else if(symUpper==='NAS100'||symUpper==='US100'||symUpper.match(/^NAS\d+$/)&&!symUpper.includes('PRO')) contractSize=1;
     else if(symUpper.includes('NAS')||symUpper.includes('NDX')) contractSize=100;
     else if(symUpper.includes('BTC')||symUpper.includes('ETH')||symUpper.includes('LTC')) contractSize=1;
-    else if(symUpper.includes('OIL')||symUpper.includes('WTI')||symUpper.includes('BRENT')) contractSize=100;
+    else if(symUpper.includes('OIL')||symUpper.includes('WTI')||symUpper.includes('BRENT')) contractSize=1000;
     else if(symUpper.includes('SPX')||symUpper.includes('SP500')) contractSize=100;
     else if(symUpper.includes('DJ30')||symUpper.includes('DOW')) contractSize=1;
     else contractSize=100;
